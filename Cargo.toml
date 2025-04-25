@@ -1,0 +1,11 @@
+[package]
+name = "mpdungeon2"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arc-swap = "1.7.1"
+clap = { version = "4.5.37", features = ["derive"] }
+crossterm = "0.29.0"
+sqlx = { version = "0.8.5", features = ["postgres", "runtime-tokio"] }
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "time"] }
