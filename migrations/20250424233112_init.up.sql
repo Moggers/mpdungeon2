@@ -73,7 +73,8 @@ CREATE TABLE messages (
   speaker INTEGER,
   recipient INTEGER,
   message TEXT,
-  sent_at TIMESTAMPTZ DEFAULT NOW()
+  sent_at TIMESTAMPTZ DEFAULT NOW(),
+  seen_by_responder BOOLEAN DEFAULT false
 );
 
 CREATE TABLE llms (
@@ -258,21 +259,18 @@ FOR EACH ROW
 EXECUTE FUNCTION room_tick();
 
 -- LLM STUFF
-
-CREATE OR REPLACE FUNCTION respond_message_trg_fn()
-RETURNS TRIGGER AS $$
-BEGIN
-  PERFORM pg_background_launch('SELECT respond_message(''' || NEW.sent_at || '''::timestamptz);');
-RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE OR REPLACE FUNCTION respond_message(message_ts TIMESTAMPTZ)
+CREATE OR REPLACE FUNCTION respond_messages()
 RETURNS void AS $$
 BEGIN
+  WITH new_message AS (
+    UPDATE messages SET seen_by_responder=true
+    FROM llms l
+    WHERE messages.seen_by_responder=false AND messages.recipient=l.entity_id
+    RETURNING *
+  )
   INSERT INTO messages (speaker, recipient, message)
   SELECT m.recipient, m.speaker, prompt
-  FROM messages m, llms l
+  FROM new_message m
   CROSS JOIN openai.prompt(
 'You are an innkeeper at the adventurers guild in a fantasy game. Respond to the player with a single line of dialogue from the innkeeper.
 ', (
@@ -282,12 +280,8 @@ BEGIN
   WHERE 
     (messages.speaker=m.speaker AND messages.recipient=m.recipient) OR 
     (messages.recipient=m.speaker AND messages.speaker=m.recipient)
-))
-WHERE l.entity_id=m.recipient AND m.sent_at=message_ts;
+));
 END;
 $$ LANGUAGE plpgsql;
 
-CREATE TRIGGER respond_message
-AFTER INSERT ON messages
-FOR EACH ROW
-EXECUTE FUNCTION respond_message_trg_fn();
+SELECT cron.schedule('respond_messages', '1 seconds', 'SELECT respond_messages()');

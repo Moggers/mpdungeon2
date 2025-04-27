@@ -1,3 +1,2 @@
 CREATE EXTENSION http; 
 CREATE EXTENSION pg_tracing;
-CREATE EXTENSION pg_background;

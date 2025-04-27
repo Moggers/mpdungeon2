@@ -20,8 +20,8 @@ make
 make install
 EOF
 RUN <<EOF
-git clone https://github.com/vibhorkum/pg_background.git
-cd pg_background
+git clone https://github.com/citusdata/pg_cron.git
+cd pg_cron
 make
 make install
 EOF
