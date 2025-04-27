@@ -257,29 +257,37 @@ AFTER INSERT OR UPDATE ON commands
 FOR EACH ROW
 EXECUTE FUNCTION room_tick();
 
-CREATE OR REPLACE FUNCTION respond_message()
+-- LLM STUFF
+
+CREATE OR REPLACE FUNCTION respond_message_trg_fn()
 RETURNS TRIGGER AS $$
 BEGIN
+  PERFORM pg_background_launch('SELECT respond_message(''' || NEW.sent_at || '''::timestamptz);');
+RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE OR REPLACE FUNCTION respond_message(message_ts TIMESTAMPTZ)
+RETURNS void AS $$
+BEGIN
   INSERT INTO messages (speaker, recipient, message)
-  SELECT NEW.recipient, NEW.speaker, prompt
-  FROM llms l 
+  SELECT m.recipient, m.speaker, prompt
+  FROM messages m, llms l
   CROSS JOIN openai.prompt(
-'You are an innkeeper at the adventurers guild in a fantasy game. You should respond to players with dialogue all on one line.
-The following quests exist:
-1. Slay 5 snakes and hand in their corpses. These are found in the Snake Dungeon. The reward is 10 gold coins.
-2. Collect 5 antivenom flowers from the Snake Dungeon. The reward is 5 gold coins.
-Do not include the IDs of quests when describing them. Avoid making long responses. Quests must be completed in full.
-The player currently has:
-```
-4 dead snakes
-```
-', NEW.message)
-  WHERE l.entity_id=NEW.recipient;
-  RETURN NEW;
+'You are an innkeeper at the adventurers guild in a fantasy game. Respond to the player with a single line of dialogue from the innkeeper.
+', (
+  SELECT STRING_AGG(species || ': ' || message, E'\n' ORDER BY sent_at ASC) || E'\n' || m.message
+  FROM messages
+  INNER JOIN species ON species.entity_id=messages.speaker
+  WHERE 
+    (messages.speaker=m.speaker AND messages.recipient=m.recipient) OR 
+    (messages.recipient=m.speaker AND messages.speaker=m.recipient)
+))
+WHERE l.entity_id=m.recipient AND m.sent_at=message_ts;
 END;
 $$ LANGUAGE plpgsql;
 
 CREATE TRIGGER respond_message
 AFTER INSERT ON messages
 FOR EACH ROW
-EXECUTE FUNCTION respond_message();
+EXECUTE FUNCTION respond_message_trg_fn();
