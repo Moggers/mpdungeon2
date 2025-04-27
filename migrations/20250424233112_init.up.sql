@@ -1,11 +1,11 @@
 CREATE SEQUENCE entities_idx;
 CREATE TABLE names (
-  entity_id INTEGER DEFAULT nextval('entities_idx'),
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
   name TEXt
 );
 
 CREATE TABLE positions (
-  entity_id INTEGER DEFAULT nextval('entities_idx'),
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
   x SMALLINT,
   y SMALLINT,
   room_id INTEGER
@@ -14,12 +14,12 @@ CREATE TABLE positions (
 CREATE INDEX positions_btree ON positions(x,y);
 
 CREATE TABLE species (
-  entity_id INTEGER DEFAULT nextval('entities_idx'),
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
   species TEXT
 );
 
 CREATE TABLE commands (
-  entity_id INTEGER DEFAULT nextval('entities_idx') UNIQUE,
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx') UNIQUE,
   command_type TEXT,
   x SMALLINT,
   y SMALLINT,
@@ -27,22 +27,22 @@ CREATE TABLE commands (
 );
 
 CREATE TABLE players (
-  entity_id INTEGER DEFAULT nextval('entities_idx'),
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
   password TEXT
 );
 
 CREATE TABLE rooms (
-  entity_id INTEGER DEFAULT nextval('entities_idx'),
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
   min_commands INT,
   landing_zone BOOLEAN
 );
 
 CREATE TABLE impassibles (
-  entity_id INTEGER DEFAULT nextval('entities_idx')
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx')
 );
 
 CREATE TABLE hps (
-  entity_id INTEGER DEFAULT nextval('entities_idx'),
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
   hp INT,
   maxhp INT
 );
@@ -51,6 +51,36 @@ CREATE TABLE portals (
   start_entity_id INTEGER,
   end_entity_id INTEGER 
 );
+
+CREATE TABLE monsters (
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx')
+);
+
+CREATE TABLE weights (
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
+  weight INTEGER
+);
+
+CREATE TABLE quests (
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
+  description TEXT,
+  species_name TEXT,
+  species_count INT,
+  giver INTEGER
+);
+
+CREATE TABLE messages (
+  speaker INTEGER,
+  recipient INTEGER,
+  message TEXT,
+  sent_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE TABLE llms (
+  entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx')
+);
+
+  
 
 
 CREATE OR REPLACE FUNCTION create_room_template(
@@ -114,6 +144,57 @@ BEGIN
     GROUP BY p.room_id, r.min_commands
     HAVING (COUNT(po.*) = COUNT(c.*)) OR (COUNT(c.*) >= r.min_commands)
   ),
+  monster_attack_commands AS (
+    SELECT p.entity_id::int, 'attack'::text, null::smallint, null::smallint, com.targ_entity_id::int
+    FROM 
+      triggered_rooms t,
+      positions p,
+      monsters m,
+      hps h,
+      LATERAL (
+        SELECT hs.entity_id "targ_entity_id"
+        FROM hps h 
+        INNER JOIN positions hs ON hs.entity_id=h.entity_id AND hs.room_id=p.room_id
+        WHERE h.entity_id != m.entity_id AND abs(hs.x - p.x) <= 1 AND abs(hs.y - p.y) <= 1
+        LIMIT 1
+      ) com
+      WHERE p.room_id=t.room_id AND p.entity_id=m.entity_id AND h.entity_id=p.entity_id AND h.hp > 0
+  ),
+  monster_move_commands AS (
+    SELECT p.entity_id::int, 'move'::text, gx, gy, null::int
+    FROM 
+      triggered_rooms t,
+      positions p,
+      monsters m,
+      hps h,
+      LATERAL (
+        SELECT x,y
+        FROM positions pt
+        INNER JOIN hps ht ON ht.entity_id=pt.entity_id
+        WHERE pt.room_id=p.room_id AND pt.entity_id != p.entity_id AND ht.hp > 0
+        ORDER BY ABS(pt.x-p.x) + ABS(pt.y - p.y) ASC
+        LIMIT 1
+      ) targ,
+      LATERAL (
+        SELECT gx ,gy 
+        FROM generate_series(-1,1) gx
+        CROSS JOIN generate_series(-1,1) gy
+        WHERE NOT EXISTS (
+          SELECT 1
+          FROM positions tp 
+          INNER JOIN impassibles i ON i.entity_id=tp.entity_id
+          WHERE tp.room_id=p.room_id AND tp.x=p.x+gx AND tp.y=p.y+gy
+        )
+        ORDER BY ABS(p.x+gx-targ.x) + ABS(p.y+gy-targ.y) ASC
+        LIMIT 1
+      ) com
+    WHERE 
+      p.room_id=t.room_id AND 
+      p.entity_id=m.entity_id AND 
+      h.entity_id=p.entity_id AND 
+      h.hp > 0 AND 
+      NOT EXISTS (SELECT mac.entity_id FROM monster_attack_commands mac WHERE mac.entity_id=p.entity_id)
+  ),
   removed_commands AS (
     DELETE FROM commands
     USING positions p 
@@ -123,8 +204,15 @@ BEGIN
     RETURNING commands.*
   ),
   actioned_commands AS (
-    SELECT rm.* FROM removed_commands rm
+    SELECT rm.* 
+    FROM removed_commands rm
     INNER JOIN hps ON hps.hp > 0 AND hps.entity_id=rm.entity_id
+    UNION ALL
+    SELECT *
+    FROM monster_attack_commands
+    UNION ALL
+    SELECT *
+    FROM monster_move_commands
   ),
   travels AS (
     UPDATE positions SET 
@@ -168,3 +256,30 @@ CREATE TRIGGER room_tick
 AFTER INSERT OR UPDATE ON commands
 FOR EACH ROW
 EXECUTE FUNCTION room_tick();
+
+CREATE OR REPLACE FUNCTION respond_message()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO messages (speaker, recipient, message)
+  SELECT NEW.recipient, NEW.speaker, prompt
+  FROM llms l 
+  CROSS JOIN openai.prompt(
+'You are an innkeeper at the adventurers guild in a fantasy game. You should respond to players with dialogue all on one line.
+The following quests exist:
+1. Slay 5 snakes and hand in their corpses. These are found in the Snake Dungeon. The reward is 10 gold coins.
+2. Collect 5 antivenom flowers from the Snake Dungeon. The reward is 5 gold coins.
+Do not include the IDs of quests when describing them. Avoid making long responses. Quests must be completed in full.
+The player currently has:
+```
+4 dead snakes
+```
+', NEW.message)
+  WHERE l.entity_id=NEW.recipient;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER respond_message
+AFTER INSERT ON messages
+FOR EACH ROW
+EXECUTE FUNCTION respond_message();

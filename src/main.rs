@@ -7,7 +7,7 @@ use std::os::linux::raw::stat;
 use clap::{Arg, Parser};
 use crossterm::terminal::disable_raw_mode;
 use draw::InputEvent;
-use networking::{ExitResult, PlayerCommand};
+use networking::{ExitResult, PlayerCommand, PlayerMessage};
 
 #[derive(Parser)]
 pub struct Args {
@@ -81,6 +81,15 @@ fn main() {
                         y: None,
                         command_target: Some(entity_id),
                     });
+                }
+                InputEvent::Say(text) => {
+                    let (recipient, message) = text.split_once(" ").unwrap();
+                    let msg = PlayerMessage {
+                        speaker: self_entity_id,
+                        recipient_species: recipient.to_owned(),
+                        message: message.to_owned(),
+                    };
+                    server_conn.say(msg);
                 }
             }
         }

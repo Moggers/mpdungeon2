@@ -1,0 +1,19 @@
+services:
+  postgres:
+    build:
+      context: ./postgres
+    environment:
+      POSTGRES_PASSWORD: password
+    ports:
+    - 5432:5432
+  jaeger:
+    image: jaegertracing/all-in-one
+    ports:
+    - 16686:16686
+  ollama:
+    image: ollama/ollama:rocm
+    ports:
+    - 11434:11434
+    devices:
+      - /dev/dri
+      - /dev/kfd

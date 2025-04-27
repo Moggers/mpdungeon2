@@ -17,7 +17,10 @@ use crossterm::{
 
 use crate::state::{State, WorldEntity};
 
-pub struct Drawer {}
+pub struct Drawer {
+    commanding: bool,
+    current_command: String,
+}
 
 #[derive(PartialEq)]
 pub enum InputEvent {
@@ -26,6 +29,7 @@ pub enum InputEvent {
     Attack(i32),
     Travel(i32),
     Pickup(i32),
+    Say(String),
 }
 
 impl Drawer {
@@ -33,7 +37,10 @@ impl Drawer {
         let mut stdout = stdout();
         enable_raw_mode().unwrap();
         execute!(stdout, SetForegroundColor(Color::White), Hide,).unwrap();
-        Self {}
+        Self {
+            commanding: false,
+            current_command: String::new(),
+        }
     }
 
     pub fn fetch_events(&mut self, s: &State) -> Vec<InputEvent> {
@@ -48,7 +55,43 @@ impl Drawer {
                 let mut loc = None;
                 let mut travel = false;
                 let mut pickup = false;
+                if let true = self.commanding {
+                    match event {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Backspace,
+                            ..
+                        }) => {
+                            self.current_command.pop();
+                            return vec![];
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Enter,
+                            ..
+                        }) => {
+                            let events = vec![InputEvent::Say(self.current_command.clone())];
+                            self.current_command = String::new();
+                            self.commanding = false;
+                            return events;
+                        }
+                        Event::Key(KeyEvent { code, .. }) => {
+                            if let Some(c) = code.as_char() {
+                                self.current_command.push(c);
+                            }
+                            return vec![];
+                        }
+                        _ => {
+                            return vec![];
+                        }
+                    }
+                }
                 match event {
+                    Event::Key(KeyEvent {
+                        code: KeyCode::Char(':'),
+                        ..
+                    }) => {
+                        self.current_command = String::new();
+                        self.commanding = true
+                    }
                     Event::Key(KeyEvent {
                         code: KeyCode::Char(','),
                         ..
@@ -103,11 +146,9 @@ impl Drawer {
                     _ => {}
                 }
                 if pickup == true {
-                    if let Some(target) = s
-                        .entities
-                        .iter()
-                        .find(|e| e.x == self_entity.x && e.y == self_entity.y)
-                    {
+                    if let Some(target) = s.entities.iter().find(|e| {
+                        e.x == self_entity.x && e.y == self_entity.y && e.weight.is_some()
+                    }) {
                         events.push(InputEvent::Pickup(target.entity_id));
                     }
                 }
@@ -224,6 +265,29 @@ impl Drawer {
                     }
                 }
             }
+        }
+
+        for (id, message) in s.chat.iter().enumerate() {
+            queue!(
+                stdout,
+                MoveTo(30, id as u16),
+                SetForegroundColor(Color::Red),
+                Print(&message.sender),
+                Print(": "),
+                SetForegroundColor(Color::White),
+                Print(&message.message)
+            )
+            .unwrap();
+        }
+
+        if self.commanding {
+            queue!(
+                stdout,
+                MoveTo(0, 0),
+                SetForegroundColor(Color::White),
+                Print(format!(":{}", self.current_command))
+            )
+            .unwrap();
         }
 
         stdout.flush().unwrap();

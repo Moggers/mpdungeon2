@@ -9,8 +9,16 @@ pub struct WorldEntity {
     pub hp: Option<i32>,
     pub maxhp: Option<i32>,
     pub ends: Option<Vec<i32>>,
+    pub weight: Option<i32>,
+}
+
+pub struct Message {
+    pub sender: String,
+    pub receiver: String,
+    pub message: String,
 }
 pub struct State {
     pub entities: Vec<WorldEntity>,
     pub self_entity_id: Option<i32>,
+    pub chat: Vec<Message>,
 }
