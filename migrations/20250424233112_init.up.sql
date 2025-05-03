@@ -66,6 +66,8 @@ CREATE TABLE quests (
   description TEXT,
   species_name TEXT,
   species_count INT,
+  reward_species TEXT,
+  reward_count INT,
   giver INTEGER
 );
 
@@ -272,8 +274,17 @@ BEGIN
   SELECT m.recipient, m.speaker, prompt
   FROM new_message m
   CROSS JOIN openai.prompt(
-'You are an innkeeper at the adventurers guild in a fantasy game. Respond to the player with a single line of dialogue from the innkeeper.
-', (
+'You are an innkeeper at the adventurers guild. Respond with a single line of dialog from the innkeeper, do not include the name at the start of the dialog.
+The following quests may be given to players, do not include the ID when describing it:
+' || (SELECT CONCAT('ID:' || entity_id || ' ' || description, E'\n') FROM quests) || '
+The player has the following in their inventory: 
+' || COALESCE(( select CONCAT(count(*) || ' ' || s.species, E'\n') from species s
+INNER JOIN positions p ON p.entity_id=s.entity_id
+WHERE p.room_id=m.speaker
+GROUP BY s.species), 'EMPTY') || '
+If a player successfully completes a quest with proof, add the control statement {QUEST_DONE:ID} to your response. Do not add any other control statements.'
+
+, (
   SELECT STRING_AGG(species || ': ' || message, E'\n' ORDER BY sent_at ASC) || E'\n' || m.message
   FROM messages
   INNER JOIN species ON species.entity_id=messages.speaker

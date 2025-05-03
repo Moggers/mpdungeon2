@@ -17,8 +17,14 @@ use crossterm::{
 
 use crate::state::{State, WorldEntity};
 
+enum InputMode {
+    Normal,
+    Command,
+    Inventory,
+}
+
 pub struct Drawer {
-    commanding: bool,
+    mode: InputMode,
     current_command: String,
 }
 
@@ -38,7 +44,7 @@ impl Drawer {
         enable_raw_mode().unwrap();
         execute!(stdout, SetForegroundColor(Color::White), Hide,).unwrap();
         Self {
-            commanding: false,
+            mode: InputMode::Normal,
             current_command: String::new(),
         }
     }
@@ -50,13 +56,23 @@ impl Drawer {
             .iter()
             .find(|e| Some(e.entity_id) == s.self_entity_id);
         if poll(std::time::Duration::from_secs(0)).unwrap() {
+            let event = read().unwrap();
+            match event {
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('c'),
+                    modifiers,
+                    ..
+                }) if modifiers & KeyModifiers::CONTROL == KeyModifiers::CONTROL => {
+                    events.push(InputEvent::Quit);
+                }
+                _ => {}
+            }
             if let Some(self_entity) = self_entity {
-                let event = read().unwrap();
                 let mut loc = None;
                 let mut travel = false;
                 let mut pickup = false;
-                if let true = self.commanding {
-                    match event {
+                match self.mode {
+                    InputMode::Command => match event {
                         Event::Key(KeyEvent {
                             code: KeyCode::Backspace,
                             ..
@@ -70,7 +86,7 @@ impl Drawer {
                         }) => {
                             let events = vec![InputEvent::Say(self.current_command.clone())];
                             self.current_command = String::new();
-                            self.commanding = false;
+                            self.mode = InputMode::Normal;
                             return events;
                         }
                         Event::Key(KeyEvent { code, .. }) => {
@@ -82,95 +98,95 @@ impl Drawer {
                         _ => {
                             return vec![];
                         }
-                    }
-                }
-                match event {
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char(':'),
-                        ..
-                    }) => {
-                        self.current_command = String::new();
-                        self.commanding = true
-                    }
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char(','),
-                        ..
-                    }) => pickup = true,
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('>'),
-                        ..
-                    }) => travel = true,
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('<'),
-                        ..
-                    }) => travel = true,
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('h'),
-                        ..
-                    }) => loc = Some((-1, 0)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('j'),
-                        ..
-                    }) => loc = Some((0, 1)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('k'),
-                        ..
-                    }) => loc = Some((0, -1)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('l'),
-                        ..
-                    }) => loc = Some((1, 0)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('y'),
-                        ..
-                    }) => loc = Some((-1, -1)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('u'),
-                        ..
-                    }) => loc = Some((1, -1)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('b'),
-                        ..
-                    }) => loc = Some((-1, 1)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('n'),
-                        ..
-                    }) => loc = Some((1, 1)),
-                    Event::Key(KeyEvent {
-                        code: KeyCode::Char('c'),
-                        modifiers,
-                        ..
-                    }) if modifiers & KeyModifiers::CONTROL == KeyModifiers::CONTROL => {
-                        events.push(InputEvent::Quit);
+                    },
+                    InputMode::Normal => {
+                        match event {
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('i'),
+                                ..
+                            }) => {
+                                self.mode = InputMode::Inventory;
+                            }
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char(':'),
+                                ..
+                            }) => {
+                                self.current_command = String::new();
+                                self.mode = InputMode::Command;
+                            }
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char(','),
+                                ..
+                            }) => pickup = true,
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('>'),
+                                ..
+                            }) => travel = true,
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('<'),
+                                ..
+                            }) => travel = true,
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('h'),
+                                ..
+                            }) => loc = Some((-1, 0)),
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('j'),
+                                ..
+                            }) => loc = Some((0, 1)),
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('k'),
+                                ..
+                            }) => loc = Some((0, -1)),
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('l'),
+                                ..
+                            }) => loc = Some((1, 0)),
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('y'),
+                                ..
+                            }) => loc = Some((-1, -1)),
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('u'),
+                                ..
+                            }) => loc = Some((1, -1)),
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('b'),
+                                ..
+                            }) => loc = Some((-1, 1)),
+                            Event::Key(KeyEvent {
+                                code: KeyCode::Char('n'),
+                                ..
+                            }) => loc = Some((1, 1)),
+                            _ => {}
+                        }
+                        if pickup == true {
+                            if let Some(target) = s.entities.iter().find(|e| {
+                                e.x == self_entity.x && e.y == self_entity.y && e.weight.is_some()
+                            }) {
+                                events.push(InputEvent::Pickup(target.entity_id));
+                            }
+                        }
+                        if travel == true {
+                            if let Some(target) = s.entities.iter().find(|e| {
+                                e.x == self_entity.x && e.y == self_entity.y && e.ends.is_some()
+                            }) {
+                                events.push(InputEvent::Travel(target.entity_id));
+                            }
+                        }
+                        if let Some((loc_x, loc_y)) = loc {
+                            if let Some(target) = s.entities.iter().find(|e| {
+                                e.x == loc_x + self_entity.x
+                                    && e.y == loc_y + self_entity.y
+                                    && e.hp.filter(|h| *h > 0).is_some()
+                            }) {
+                                events.push(InputEvent::Attack(target.entity_id));
+                            } else {
+                                events.push(InputEvent::Move((loc_x, loc_y)));
+                            }
+                        }
                     }
                     _ => {}
-                }
-                if pickup == true {
-                    if let Some(target) = s.entities.iter().find(|e| {
-                        e.x == self_entity.x && e.y == self_entity.y && e.weight.is_some()
-                    }) {
-                        events.push(InputEvent::Pickup(target.entity_id));
-                    }
-                }
-                if travel == true {
-                    if let Some(target) = s
-                        .entities
-                        .iter()
-                        .find(|e| e.x == self_entity.x && e.y == self_entity.y && e.ends.is_some())
-                    {
-                        events.push(InputEvent::Travel(target.entity_id));
-                    }
-                }
-                if let Some((loc_x, loc_y)) = loc {
-                    if let Some(target) = s.entities.iter().find(|e| {
-                        e.x == loc_x + self_entity.x
-                            && e.y == loc_y + self_entity.y
-                            && e.hp.filter(|h| *h > 0).is_some()
-                    }) {
-                        events.push(InputEvent::Attack(target.entity_id));
-                    } else {
-                        events.push(InputEvent::Move((loc_x, loc_y)));
-                    }
                 }
             }
         }
@@ -184,7 +200,12 @@ impl Drawer {
         stdout
             .queue(terminal::Clear(terminal::ClearType::All))
             .unwrap();
-        let mut sorted_entities: Vec<&_> = s.entities.iter().map(|e| e).collect();
+        let mut sorted_entities: Vec<&_> = s
+            .entities
+            .iter()
+            .map(|e| e)
+            .filter(|e| Some(e.room_id) != s.self_entity_id)
+            .collect();
         sorted_entities.sort_by(|a, b| match (a.maxhp, b.maxhp, a.entity_id, b.entity_id) {
             (_, _, entity_id, _) if Some(entity_id) == s.self_entity_id => {
                 std::cmp::Ordering::Greater
@@ -267,27 +288,67 @@ impl Drawer {
             }
         }
 
-        for (id, message) in s.chat.iter().enumerate() {
-            queue!(
-                stdout,
-                MoveTo(30, id as u16),
-                SetForegroundColor(Color::Red),
-                Print(&message.sender),
-                Print(": "),
-                SetForegroundColor(Color::White),
-                Print(&message.message)
-            )
-            .unwrap();
-        }
+        match self.mode {
+            InputMode::Normal => {
+                for (id, message) in s.chat.iter().enumerate() {
+                    queue!(
+                        stdout,
+                        MoveTo(30, id as u16),
+                        SetForegroundColor(Color::Red),
+                        Print(&message.sender),
+                        Print(": "),
+                        SetForegroundColor(Color::White),
+                        Print(&message.message)
+                    )
+                    .unwrap();
+                }
+            }
 
-        if self.commanding {
-            queue!(
-                stdout,
-                MoveTo(0, 0),
-                SetForegroundColor(Color::White),
-                Print(format!(":{}", self.current_command))
-            )
-            .unwrap();
+            InputMode::Inventory => {
+                queue!(
+                    stdout,
+                    MoveTo(30, 0),
+                    SetForegroundColor(Color::White),
+                    Print("Inventory")
+                )
+                .unwrap();
+                for (i, e) in s
+                    .entities
+                    .iter()
+                    .filter(|e| Some(e.room_id) == s.self_entity_id)
+                    .enumerate()
+                {
+                    queue!(
+                        stdout,
+                        MoveTo(32, (i + 1) as u16),
+                        SetForegroundColor(Color::White),
+                        Print(e.species.as_deref().unwrap_or(""))
+                    )
+                    .unwrap();
+                }
+            }
+            InputMode::Command => {
+                for (id, message) in s.chat.iter().enumerate() {
+                    queue!(
+                        stdout,
+                        MoveTo(30, id as u16),
+                        SetForegroundColor(Color::Red),
+                        Print(&message.sender),
+                        Print(": "),
+                        SetForegroundColor(Color::White),
+                        Print(&message.message)
+                    )
+                    .unwrap();
+                }
+                queue!(
+                    stdout,
+                    MoveTo(0, 0),
+                    SetForegroundColor(Color::White),
+                    Print(format!(":{}", self.current_command))
+                )
+                .unwrap();
+            }
+            _ => {}
         }
 
         stdout.flush().unwrap();

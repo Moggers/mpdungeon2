@@ -2,6 +2,7 @@ pub struct WorldEntity {
     pub entity_id: i32,
     pub x: i16,
     pub y: i16,
+    pub room_id: i32,
     pub species: Option<String>,
     pub command_type: Option<String>,
     pub command_x: Option<i16>,
