@@ -9,6 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Check (lint): `cargo check`
 - Test: `cargo test`
 - Run specific test: `cargo test <test_name>`
+- Test migrations: `sql migrate revert` until there are no migrations left undo and then running `sql migrate run`.
 
 ## Code Style Guidelines
 

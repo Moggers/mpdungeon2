@@ -1,21 +1,18 @@
-use std::{
-    collections::BTreeMap,
-    io::{Write, stdout},
-};
+use std::io::{Write, stdout};
 
 use crossterm::{
     ExecutableCommand, QueueableCommand,
-    cursor::{self, Hide, MoveTo, Show},
+    cursor::{Hide, MoveTo, Show},
     event::{Event, KeyCode, KeyEvent, KeyModifiers, poll, read},
     execute, queue,
-    style::{self, Color, Print, SetForegroundColor, Stylize},
+    style::{Color, Print, SetForegroundColor},
     terminal::{
         self, BeginSynchronizedUpdate, EndSynchronizedUpdate, disable_raw_mode, enable_raw_mode,
         window_size,
     },
 };
 
-use crate::state::{State, WorldEntity};
+use crate::state::State;
 
 enum InputMode {
     Normal,
@@ -98,6 +95,14 @@ impl Drawer {
                         _ => {
                             return vec![];
                         }
+                    },
+                    InputMode::Inventory => match event {
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Esc, ..
+                        }) => {
+                            self.mode = InputMode::Normal;
+                        }
+                        _ => {}
                     },
                     InputMode::Normal => {
                         match event {
@@ -186,7 +191,6 @@ impl Drawer {
                             }
                         }
                     }
-                    _ => {}
                 }
             }
         }
@@ -348,7 +352,6 @@ impl Drawer {
                 )
                 .unwrap();
             }
-            _ => {}
         }
 
         stdout.flush().unwrap();
