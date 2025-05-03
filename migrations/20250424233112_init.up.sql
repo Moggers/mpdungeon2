@@ -269,12 +269,13 @@ BEGIN
     FROM llms l
     WHERE messages.seen_by_responder=false AND messages.recipient=l.entity_id
     RETURNING *
-  )
-  INSERT INTO messages (speaker, recipient, message)
-  SELECT m.recipient, m.speaker, prompt
-  FROM new_message m
-  CROSS JOIN openai.prompt(
-'You are an innkeeper at the adventurers guild. Respond with a single line of dialog from the innkeeper, do not include the name at the start of the dialog.
+  ),
+  responses AS (
+    SELECT 
+      m.recipient, 
+      m.speaker, 
+      openai.prompt(
+        'You are an innkeeper at the adventurers guild. Respond with a single line of dialog from the innkeeper, do not include the name at the start of the dialog.
 The following quests may be given to players, do not include the ID when describing it:
 ' || (SELECT CONCAT('ID:' || entity_id || ' ' || description, E'\n') FROM quests) || '
 The player has the following in their inventory: 
@@ -284,14 +285,81 @@ WHERE p.room_id=m.speaker
 GROUP BY s.species), 'EMPTY') || '
 If a player successfully completes a quest with proof, add the control statement {QUEST_DONE:ID} to your response. Do not add any other control statements.'
 
-, (
-  SELECT STRING_AGG(species || ': ' || message, E'\n' ORDER BY sent_at ASC) || E'\n' || m.message
-  FROM messages
-  INNER JOIN species ON species.entity_id=messages.speaker
-  WHERE 
-    (messages.speaker=m.speaker AND messages.recipient=m.recipient) OR 
-    (messages.recipient=m.speaker AND messages.speaker=m.recipient)
-));
+        , (
+          SELECT STRING_AGG(species || ': ' || message, E'\n' ORDER BY sent_at ASC) || E'\n' || m.message
+          FROM messages
+          INNER JOIN species ON species.entity_id=messages.speaker
+          WHERE 
+            (messages.speaker=m.speaker AND messages.recipient=m.recipient) OR 
+            (messages.recipient=m.speaker AND messages.speaker=m.recipient)
+        )
+      ) AS message
+    FROM new_message m
+  ),
+  quest_completed AS (
+    SELECT 
+      r.speaker, 
+      r.recipient,
+      (regexp_matches(r.message, '{QUEST_DONE:(\d+)}'))[1]::INT AS quest_id
+    FROM responses r
+    WHERE r.message ~ '{QUEST_DONE:\d+}'
+  ),
+  completed_quest_info AS (
+    SELECT 
+      qc.speaker, 
+      qc.recipient,
+      q.entity_id AS quest_id,
+      q.species_name,
+      q.species_count,
+      q.reward_species,
+      q.reward_count
+    FROM quest_completed qc
+    JOIN quests q ON q.entity_id = qc.quest_id
+  ),
+  transfer_items AS (
+    UPDATE positions 
+    SET room_id = q.recipient
+    FROM (
+      SELECT 
+        p.entity_id,
+        cqi.recipient
+      FROM completed_quest_info cqi
+      JOIN species s ON s.species = cqi.species_name
+      JOIN positions p ON p.entity_id = s.entity_id AND p.room_id = cqi.speaker
+      ORDER BY p.entity_id
+      LIMIT (SELECT species_count FROM completed_quest_info LIMIT 1)
+    ) AS q
+    WHERE positions.entity_id = q.entity_id
+    RETURNING positions.entity_id
+  ),
+  create_reward_entities AS (
+    INSERT INTO positions (entity_id, x, y, room_id)
+    SELECT 
+      nextval('entities_idx'),
+      0, 
+      0, 
+      speaker
+    FROM completed_quest_info
+    CROSS JOIN generate_series(1, (SELECT reward_count FROM completed_quest_info LIMIT 1))
+    RETURNING entity_id
+  ),
+  add_reward_species AS (
+    INSERT INTO species (entity_id, species)
+    SELECT 
+      entity_id,
+      (SELECT reward_species FROM completed_quest_info LIMIT 1)
+    FROM create_reward_entities
+  ),
+  add_reward_weights AS (
+    INSERT INTO weights (entity_id, weight)
+    SELECT 
+      entity_id,
+      1
+    FROM create_reward_entities
+  )
+  INSERT INTO messages (speaker, recipient, message)
+  SELECT recipient, speaker, message
+  FROM responses;
 END;
 $$ LANGUAGE plpgsql;
 

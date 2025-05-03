@@ -18,7 +18,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **Types**: Use Rust's strong type system; prefer Option<T> over nullable types
 - **Error Handling**: Use unwrap() only in prototyping; prefer Result/Option pattern matching in production code
 - **Naming**: Use snake_case for functions, variables, modules; CamelCase for types/structs; SCREAMING_CASE for constants
-- **SQL**: Use query_file!() macro for SQL queries, keeping SQL in dedicated .sql files
+- **SQL**: Use query_file!() macro for SQL queries, keeping SQL in dedicated .sql files. Avoid PL/PGSQL and use CTEs for complex logic.
 - **Documentation**: Document public interfaces with comments
 
 Before committing, run `cargo check` to ensure code compiles without errors.

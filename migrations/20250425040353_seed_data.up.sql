@@ -67,7 +67,7 @@ FROM new_pos;
 
 -- Quests
 INSERT INTO quests (description, species_name, species_count, giver, reward_species, reward_count)
-SELECT 'Slay one snake and bring its corpse. Snakes may be found in the snake dungeon. The reward is one gold coin.', 'snake', 1, entity_id, 'gold count', 1
+SELECT 'Slay one snake and bring its corpse. Snakes may be found in the snake dungeon. The reward is one gold coin.', 'snake', 1, entity_id, 'gold', 1
 FROM species WHERE species='innkeeper';
 
 -- Test dungeon
