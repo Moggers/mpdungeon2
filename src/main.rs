@@ -82,6 +82,15 @@ fn main() {
                         command_target: Some(entity_id),
                     });
                 }
+                InputEvent::Drop(entity_id) => {
+                    server_conn.create_commmand(PlayerCommand {
+                        entity_id: self_entity_id,
+                        command_type: "drop".to_owned(),
+                        x: None,
+                        y: None,
+                        command_target: Some(entity_id),
+                    });
+                }
                 InputEvent::Say(text) => {
                     let (recipient, message) = text.split_once(" ").unwrap();
                     let msg = PlayerMessage {

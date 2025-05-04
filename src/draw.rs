@@ -23,6 +23,7 @@ enum InputMode {
 pub struct Drawer {
     mode: InputMode,
     current_command: String,
+    inventory_selected_index: usize,
 }
 
 #[derive(PartialEq)]
@@ -32,10 +33,70 @@ pub enum InputEvent {
     Attack(i32),
     Travel(i32),
     Pickup(i32),
+    Drop(i32),
     Say(String),
 }
 
 impl Drawer {
+    // Get the appropriate wall character based on adjacent walls
+    fn get_wall_char(&self, s: &State, entity: &crate::state::WorldEntity) -> &'static str {
+        // Check for walls in all 8 directions (N, NE, E, SE, S, SW, W, NW)
+        let directions = [
+            (0, -1),  // North
+            (1, -1),  // Northeast
+            (1, 0),   // East
+            (1, 1),   // Southeast
+            (0, 1),   // South
+            (-1, 1),  // Southwest
+            (-1, 0),  // West
+            (-1, -1), // Northwest
+        ];
+        
+        // We mostly care about cardinal directions for box drawing
+        let mut north = false;
+        let mut east = false;
+        let mut south = false;
+        let mut west = false;
+        
+        for (idx, (dx, dy)) in directions.iter().enumerate() {
+            let adjacent_wall = s.entities.iter().any(|e| 
+                e.x == entity.x + dx && 
+                e.y == entity.y + dy && 
+                e.species.as_deref() == Some("wall") &&
+                e.room_id == entity.room_id
+            );
+            
+            // Set cardinal direction flags
+            match idx {
+                0 => north = adjacent_wall, // North
+                2 => east = adjacent_wall,  // East
+                4 => south = adjacent_wall, // South
+                6 => west = adjacent_wall,  // West
+                _ => {}  // We ignore diagonals for basic box drawing
+            }
+        }
+        
+        // Return the appropriate double-line box drawing character based on adjacent walls
+        match (north, east, south, west) {
+            (true, true, true, true) => "╬", // All four directions
+            (true, true, true, false) => "╠", // North, East, South
+            (true, true, false, true) => "╩", // North, East, West
+            (true, false, true, true) => "╣", // North, South, West
+            (false, true, true, true) => "╦", // East, South, West
+            (true, true, false, false) => "╚", // North, East
+            (true, false, true, false) => "║", // North, South
+            (true, false, false, true) => "╝", // North, West
+            (false, true, true, false) => "╔", // East, South
+            (false, true, false, true) => "═", // East, West
+            (false, false, true, true) => "╗", // South, West
+            (true, false, false, false) => "║", // North only
+            (false, true, false, false) => "═", // East only
+            (false, false, true, false) => "║", // South only
+            (false, false, false, true) => "═", // West only
+            (false, false, false, false) => "■", // No connections (isolated wall)
+        }
+    }
+
     pub fn new() -> Self {
         let mut stdout = stdout();
         enable_raw_mode().unwrap();
@@ -43,6 +104,7 @@ impl Drawer {
         Self {
             mode: InputMode::Normal,
             current_command: String::new(),
+            inventory_selected_index: 0,
         }
     }
 
@@ -101,6 +163,49 @@ impl Drawer {
                             code: KeyCode::Esc, ..
                         }) => {
                             self.mode = InputMode::Normal;
+                            self.inventory_selected_index = 0;
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('j'), ..
+                        }) => {
+                            let inventory_count = s.entities
+                                .iter()
+                                .filter(|e| Some(e.room_id) == s.self_entity_id)
+                                .count();
+                            if inventory_count > 0 {
+                                self.inventory_selected_index = (self.inventory_selected_index + 1) % inventory_count;
+                            }
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('k'), ..
+                        }) => {
+                            let inventory_count = s.entities
+                                .iter()
+                                .filter(|e| Some(e.room_id) == s.self_entity_id)
+                                .count();
+                            if inventory_count > 0 {
+                                self.inventory_selected_index = if self.inventory_selected_index == 0 {
+                                    if inventory_count > 0 { inventory_count - 1 } else { 0 }
+                                } else {
+                                    self.inventory_selected_index - 1
+                                };
+                            }
+                        }
+                        Event::Key(KeyEvent {
+                            code: KeyCode::Char('d'), ..
+                        }) => {
+                            let inventory = s.entities
+                                .iter()
+                                .filter(|e| Some(e.room_id) == s.self_entity_id)
+                                .collect::<Vec<_>>();
+                            
+                            if !inventory.is_empty() && self.inventory_selected_index < inventory.len() {
+                                let item = inventory[self.inventory_selected_index];
+                                events.push(InputEvent::Drop(item.entity_id));
+                                // Exit inventory mode after dropping
+                                self.mode = InputMode::Normal;
+                                self.inventory_selected_index = 0;
+                            }
                         }
                         _ => {}
                     },
@@ -229,6 +334,7 @@ impl Drawer {
                             (_, _, Some(hp)) if hp <= 0 => Color::Red,
                             (eid, _, _) if Some(eid) == s.self_entity_id => Color::Cyan,
                             (_, Some("snake"), _) => Color::Green,
+                            (_, Some("gold"), _) => Color::Yellow,
                             (_, _, _) => Color::White,
                         }),
                         Print(match (species.as_str(), e.hp) {
@@ -237,8 +343,9 @@ impl Drawer {
                             ("door", _) => "║",
                             ("snake", _) => "s",
                             ("floor", _) => "+",
-                            ("wall", _) => "#",
+                            ("wall", _) => self.get_wall_char(s, e),
                             ("upstair", _) => "<",
+                            ("gold", _) => "$",
                             _ => "?",
                         })
                     )
@@ -316,17 +423,26 @@ impl Drawer {
                     Print("Inventory")
                 )
                 .unwrap();
-                for (i, e) in s
+                let inventory = s
                     .entities
                     .iter()
                     .filter(|e| Some(e.room_id) == s.self_entity_id)
-                    .enumerate()
-                {
+                    .collect::<Vec<_>>();
+                
+                for (i, e) in inventory.iter().enumerate() {
+                    let item_color = match e.species.as_deref() {
+                        Some("gold") => Color::Yellow,
+                        _ => Color::White
+                    };
+                    
                     queue!(
                         stdout,
                         MoveTo(32, (i + 1) as u16),
-                        SetForegroundColor(Color::White),
-                        Print(e.species.as_deref().unwrap_or(""))
+                        SetForegroundColor(if i == self.inventory_selected_index { Color::Yellow } else { item_color }),
+                        Print(format!("{}{}", 
+                            if i == self.inventory_selected_index { "> " } else { "  " },
+                            e.species.as_deref().unwrap_or("")
+                        ))
                     )
                     .unwrap();
                 }

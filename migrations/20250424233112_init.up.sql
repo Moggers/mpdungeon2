@@ -1,3 +1,5 @@
+CREATE EXTENSION pg_cron;
+CREATE SCHEMA IF NOT EXISTS cron;
 CREATE SEQUENCE entities_idx;
 CREATE TABLE names (
   entity_id INTEGER PRIMARY KEY DEFAULT nextval('entities_idx'),
@@ -235,6 +237,15 @@ BEGIN
     FROM commands c
     WHERE positions.entity_id=c.target AND c.command_type='pickup'
   ),
+  dropped AS (
+    UPDATE positions SET
+      x = player_pos.x,
+      y = player_pos.y,
+      room_id = player_pos.room_id
+    FROM actioned_commands c
+    INNER JOIN positions player_pos ON player_pos.entity_id = c.entity_id
+    WHERE positions.entity_id = c.target AND c.command_type = 'drop'
+  ),
   new_pos AS (
     UPDATE positions SET
       x = positions.x + c.x,
@@ -363,4 +374,5 @@ If a player successfully completes a quest with proof, add the control statement
 END;
 $$ LANGUAGE plpgsql;
 
+-- Set database name for cron jobs
 SELECT cron.schedule('respond_messages', '1 seconds', 'SELECT respond_messages()');

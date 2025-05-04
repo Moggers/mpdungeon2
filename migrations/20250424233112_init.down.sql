@@ -15,3 +15,5 @@ DROP TABLE IF EXISTS messages;
 DROP TABLE IF EXISTS llms;
 
 DROP SEQUENCE "entities_idx";
+
+DROP EXTENSION pg_cron;
