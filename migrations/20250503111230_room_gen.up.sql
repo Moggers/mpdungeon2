@@ -1,10 +1,8 @@
--- Create a function to generate a 2D BSP dungeon using recursive CTE
+-- create a function to generate a 2d bsp dungeon using recursive cte
 CREATE OR REPLACE FUNCTION generate_bsp(
     width INT,
     height INT,
-    max_room_size INT DEFAULT 20,
-    min_partition_size INT DEFAULT 10,
-    split_threshold FLOAT DEFAULT 0.5
+    max_room_size INT DEFAULT 20
 ) RETURNS TABLE (
     id INT,
     x INT,
@@ -74,23 +72,17 @@ WITH RECURSIVE partitions AS (
                     ELSE FALSE                  -- Split vertically if taller
                 END AS is_horizontal,
                 
-                -- Calculate split position, ensuring each side has at least min_partition_size
+                -- Calculate split position with minimum separation of 1
                 CASE
                     WHEN p.w >= p.h THEN  -- For horizontal splits
-                        min_partition_size + 
-                        (random() * (p.w - 2 * min_partition_size))::INT
+                        1 + (random() * (p.w - 2))::INT
                     ELSE                  -- For vertical splits
-                        min_partition_size + 
-                        (random() * (p.h - 2 * min_partition_size))::INT
+                        1 + (random() * (p.h - 2))::INT
                 END AS position
         ) AS split
     WHERE 
-        -- Only process partitions that are large enough to split
-        p.partition_type != 'leaf' AND
-        p.w >= 2 * min_partition_size AND 
-        p.h >= 2 * min_partition_size AND
-        -- Limit recursion depth
-        p.depth < 10
+        -- Continue subdividing until all rooms are smaller than max_room_size
+        (p.w > max_room_size OR p.h > max_room_size)
 ),
 -- Mark leaf nodes and determine final partitions
 leaf_partitions AS (
@@ -98,9 +90,8 @@ leaf_partitions AS (
         id,
         x,
         y,
-        -- Cap size at max_room_size (optional)
-        LEAST(w, max_room_size) AS w,
-        LEAST(h, max_room_size) AS h,
+        w,
+        h,
         parent_id
     FROM partitions p
     WHERE
@@ -121,17 +112,12 @@ CREATE OR REPLACE FUNCTION generate_dungeon(
     width INT,
     height INT,
     room_count INT DEFAULT NULL,
-    max_room_size INT DEFAULT 20,
-    min_partition_size INT DEFAULT 10
+    min_room_size INT default 3,
+    max_room_size INT DEFAULT 20
 ) RETURNS TABLE (
     room_id INT,
-    template TEXT,
-    id INT,
-    x INT,
-    y INT,
-    w INT,
-    h INT,
-    parent_id INT
+    debug_output jsonb,
+    template TEXT
 ) AS $$
 WITH 
 -- First create a room entity
@@ -142,7 +128,7 @@ room_entity AS (
 ),
 -- Generate the BSP tree leaves
 all_leaves AS (
-    SELECT * FROM generate_bsp(width, height, max_room_size, min_partition_size)
+    SELECT * FROM generate_bsp(width, height, max_room_size)
 ),
 -- Count the number of leaves generated
 leaf_count AS (
@@ -158,6 +144,8 @@ selected_leaves AS (
             ELSE random() 
         END AS rank
     FROM all_leaves
+    -- Only grab sufficiently sized rooms
+    WHERE all_leaves.w > min_room_size AND all_leaves.h > min_room_size
     -- Order by the rank to get a deterministic but random ordering
     ORDER BY rank DESC
     -- Limit to exact room count
@@ -165,6 +153,49 @@ selected_leaves AS (
         WHEN room_count IS NULL THEN NULL
         ELSE room_count
     END
+),
+-- Calculate all possible edges between rooms
+edges AS (
+    SELECT 
+        r1.id AS id1,
+        r2.id AS id2,
+        ABS(r1.x - r2.x) + ABS(r1.y - r2.y) AS distance
+    FROM 
+        selected_leaves r1
+        CROSS JOIN selected_leaves r2
+    WHERE 
+        r1.id < r2.id -- Avoid duplicates and self-connections
+    ORDER BY 
+        distance -- Sort by distance for MST algorithm
+),
+
+-- Use a simpler approach for corridor generation 
+-- Create a star topology by connecting each room to a central room
+corridors AS (
+    -- Find a central room (using the one closest to the average position)
+    WITH central_room AS (
+        SELECT 
+            id,
+            x, y,
+            ABS(x - (SELECT AVG(x) FROM selected_leaves)) + 
+            ABS(y - (SELECT AVG(y) FROM selected_leaves)) AS distance_to_center
+        FROM 
+            selected_leaves
+        ORDER BY 
+            distance_to_center
+        LIMIT 1
+    )
+    
+    -- Connect each room to the central room
+    SELECT 
+        r.id AS id1,
+        c.id AS id2,
+        ABS(r.x - c.x) + ABS(r.y - c.y) AS distance
+    FROM 
+        selected_leaves r,
+        central_room c
+    WHERE 
+        r.id != c.id
 ),
 -- Get coordinates for all grid positions
 grid_coords AS (
@@ -175,8 +206,9 @@ grid_coords AS (
         CROSS JOIN
         generate_series(0, height-1) AS y
 ),
--- Determine which coordinates should be floor tiles (+)
-floor_tiles AS (
+-- All potential dungeon tiles (including corridors)
+raw_floor_tiles AS (
+    -- Room tiles
     SELECT 
         g.x, g.y
     FROM 
@@ -191,17 +223,125 @@ floor_tiles AS (
                 g.y >= r.y AND 
                 g.y < r.y + r.h
         )
+    
+    UNION
+    
+    -- Corridor tiles - create L-shaped corridors between connected rooms
+    SELECT 
+        x, y
+    FROM (
+        -- For each corridor, get the center points of the two rooms
+        SELECT 
+            r1.x + r1.w/2 AS x1,
+            r1.y + r1.h/2 AS y1,
+            r2.x + r2.w/2 AS x2,
+            r2.y + r2.h/2 AS y2,
+            c.id1, c.id2
+        FROM 
+            corridors c
+            JOIN selected_leaves r1 ON c.id1 = r1.id
+            JOIN selected_leaves r2 ON c.id2 = r2.id
+    ) room_centers
+    -- Generate the horizontal corridor segment
+    CROSS JOIN LATERAL (
+        SELECT 
+            generate_series(
+                LEAST(floor(x1)::int, floor(x2)::int),
+                GREATEST(floor(x1)::int, floor(x2)::int)
+            ) AS x,
+            floor(y1)::int AS y
+    ) horiz_corridor
+    
+    UNION
+    
+    -- Generate the vertical corridor segment for each corridor
+    SELECT 
+        x, y
+    FROM (
+        -- For each corridor, get the center points of the two rooms
+        SELECT 
+            r1.x + r1.w/2 AS x1,
+            r1.y + r1.h/2 AS y1,
+            r2.x + r2.w/2 AS x2,
+            r2.y + r2.h/2 AS y2,
+            c.id1, c.id2
+        FROM 
+            corridors c
+            JOIN selected_leaves r1 ON c.id1 = r1.id
+            JOIN selected_leaves r2 ON c.id2 = r2.id
+    ) room_centers
+    -- Generate the vertical corridor segment
+    CROSS JOIN LATERAL (
+        SELECT 
+            floor(x2)::int AS x,
+            generate_series(
+                LEAST(floor(y1)::int, floor(y2)::int),
+                GREATEST(floor(y1)::int, floor(y2)::int)
+            ) AS y
+    ) vert_corridor
 ),
+
+-- Final floor tiles - excluding edge tiles which will become walls
+floor_tiles AS (
+    SELECT x, y 
+    FROM raw_floor_tiles
+    WHERE 
+        x > 0 AND x < width - 1 AND
+        y > 0 AND y < height - 1
+),
+
+-- Edge tiles (floors converted to walls)
+edge_walls AS (
+    SELECT x, y
+    FROM raw_floor_tiles
+    WHERE
+        x = 0 OR x = width - 1 OR
+        y = 0 OR y = height - 1
+),
+-- Identify regular wall tiles (adjacent to floor tiles)
+wall_tiles AS (
+    -- Standard walls: adjacent to floor tiles
+    SELECT DISTINCT
+        g.x, g.y
+    FROM 
+        grid_coords g
+    WHERE 
+        -- Tile is not a floor
+        NOT EXISTS (
+            SELECT 1 FROM floor_tiles f 
+            WHERE f.x = g.x AND f.y = g.y
+        )
+        -- But is adjacent to a floor tile (including diagonals)
+        AND EXISTS (
+            SELECT 1 FROM floor_tiles f
+            WHERE 
+                (f.x BETWEEN g.x - 1 AND g.x + 1) AND
+                (f.y BETWEEN g.y - 1 AND g.y + 1)
+        )
+    
+    UNION
+    
+    -- Include the edge walls we identified earlier
+    SELECT x, y FROM edge_walls
+),
+
 -- Generate dungeon map directly from grid coordinates
 dungeon_map AS (
     SELECT 
         g.y,
         string_agg(
             CASE 
+                -- Floor tiles 
                 WHEN EXISTS (
                     SELECT 1 FROM floor_tiles f 
                     WHERE f.x = g.x AND f.y = g.y
                 ) THEN '+'
+                -- Wall tiles
+                WHEN EXISTS (
+                    SELECT 1 FROM wall_tiles w
+                    WHERE w.x = g.x AND w.y = g.y
+                ) THEN '#'
+                -- Empty space
                 ELSE ' '
             END,
             '' ORDER BY g.x
@@ -231,15 +371,12 @@ apply_template AS (
 -- Return room_id, template, and leaves for the caller
 SELECT 
     room_id,
-    template,
-    id,
-    x,
-    y,
-    w,
-    h,
-    parent_id
+    jsonb_build_object(
+      'corridors', (SELECT jsonb_agg(corridors.*) FROM corridors),
+      'rooms', (SELECT jsonb_agg(selected_leaves.*) FROM selected_leaves),
+      'template', (SELECT template FROM dungeon_template)
+    ) "debug_output",
+    (SELECT template FROM dungeon_template) AS template
 FROM create_template
-CROSS JOIN (
-    SELECT * FROM selected_leaves
-);
+GROUP BY room_id;
 $$ LANGUAGE SQL;
